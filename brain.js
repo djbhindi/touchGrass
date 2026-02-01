@@ -46,16 +46,19 @@ class NatureBrain {
 
     async checkFetchThreshold(lat, lon) {
         if (this.isFetching) return;
+        const isInitialFetch = this.lastFetchLocation.lat === null;
         const moveDist = this.lastFetchLocation.lat
             ? getDistance(lat, lon, this.lastFetchLocation.lat, this.lastFetchLocation.lon) * 1000
             : Infinity;
         if (moveDist > 50) {
             this.isFetching = true;
-            statusText.innerText = "Refreshing map data...";
+            statusText.innerText = isInitialFetch
+                ? "Looking for grass..."
+                : "You moved! Looking for new grass.";
             this.allGrassyAreas = await fetchNearbyGrass(lat, lon);
             this.lastFetchLocation = { lat, lon };
             this.isFetching = false;
-            statusText.innerText = "Map data updated.";
+            statusText.innerText = "";
         }
     }
 

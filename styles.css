@@ -1,49 +1,89 @@
 body {
     font-family: "Trebuchet MS", Trebuchet, Arial, sans-serif;
     text-align: center;
+    color: #2f3a2f;
     margin: 0;
     padding: 24px 16px 40px;
+    transition: background-color 0.4s ease;
 }
 
 h1 {
-    font-size: 2.4rem;
-    margin: 12px 0 18px;
+    font-size: 2.6rem;
+    letter-spacing: 0.5px;
+    margin: 14px 0 18px;
 }
 
-#status,
-#coords,
-#heading-display,
 #nearest-distance,
 #nearest-name {
     margin: 6px 0;
+    font-size: 1.02rem;
+}
+
+#status {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 10px;
+    font-size: 0.95rem;
+    color: #4a5a4a;
+    pointer-events: none;
 }
 
 #locate-me {
     margin: 10px 0 18px;
-    padding: 10px 16px;
+    padding: 10px 18px;
     font-size: 1rem;
+    border: none;
+    border-radius: 999px;
+    background: #a8e6a3;
+    color: #1f3a1f;
+    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.12);
+    cursor: pointer;
 }
 
 #compass-container {
     width: 280px;
     height: 280px;
-    border: 5px solid #333;
+    border: 5px solid #2f4f3a;
     border-radius: 50%;
     margin: 18px auto 12px;
     position: relative;
     overflow: hidden;
+    box-shadow: 0 10px 26px rgba(0, 0, 0, 0.12);
 }
 
 #compass-disk {
     width: 100%;
     height: 100%;
-    background: radial-gradient(circle, #fff 60%, #eee 100%);
+    background: radial-gradient(circle, #ffffff 60%, #f3f6f0 100%);
     position: absolute;
+    z-index: 1;
     transition: transform 0.1s ease-out;
     display: flex;
     align-items: center;
     justify-content: center;
     font-weight: bold;
+}
+
+#heading-display {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    font-size: 1.6rem;
+    color: #2f3a2f;
+    background: #ffffff;
+    padding: 6px 12px;
+    border-radius: 999px;
+    box-shadow: 0 6px 14px rgba(0, 0, 0, 0.08);
+    z-index: 30;
+    pointer-events: none;
+}
+
+#nearest-distance {
+    font-size: 1.35rem;
+    font-weight: bold;
+    margin-top: 10px;
 }
 
 .needle {
@@ -52,7 +92,7 @@ h1 {
     left: 50%;
     width: 4px;
     height: 140px;
-    background: red;
+    background: #ff6b6b;
     transform: translateX(-50%);
     z-index: 10;
 }
@@ -60,11 +100,12 @@ h1 {
 /* Marks for N, E, S, W */
 .label {
     position: absolute;
+    color: #3b4d3b;
 }
 
 .n {
     top: 10px;
-    color: red;
+    color: #ff6b6b;
 }
 
 .e {

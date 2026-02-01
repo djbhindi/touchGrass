@@ -1,7 +1,6 @@
 // 1. UI Elements
 const locateBtn = document.getElementById('locate-me');
 const statusText = document.getElementById('status');
-const coordsText = document.getElementById('coords');
 const compassDisk = document.getElementById('compass-disk');
 const headingDisplay = document.getElementById('heading-display');
 const distElement = document.getElementById('nearest-distance');
@@ -13,6 +12,7 @@ let trackingStarted = false;
 let geoWatchId = null;
 let absoluteOrientationSeen = false;
 let fallbackTimerId = null;
+let hasLocation = false;
 
 // 2. UI Render Function
 function setBackgroundByDistance(distanceKm) {
@@ -25,7 +25,7 @@ function setBackgroundByDistance(distanceKm) {
 }
 
 function updateUI(item, heading) {
-    headingDisplay.innerText = `Heading: ${Math.round(heading)}°`;
+    headingDisplay.innerText = `${Math.round(heading)}°`;
     if (displayHeading === null) {
         displayHeading = heading;
     } else {
@@ -48,6 +48,7 @@ function updateUI(item, heading) {
 
 // 3. Execution / Event Listeners
 document.addEventListener('DOMContentLoaded', () => {
+    statusText.innerText = "Waiting for location...";
     startTracking(false);
 });
 
@@ -93,7 +94,12 @@ async function startTracking(fromUserGesture) {
     if (geoWatchId === null) {
         geoWatchId = navigator.geolocation.watchPosition((pos) => {
             const { latitude, longitude, accuracy } = pos.coords;
-            coordsText.innerText = `Lat: ${latitude.toFixed(5)}, Lon: ${longitude.toFixed(5)} (±${accuracy.toFixed(1)}m)`;
+            if (!hasLocation) {
+                hasLocation = true;
+                if (statusText.innerText === "Waiting for location...") {
+                    statusText.innerText = "";
+                }
+            }
             brain.updateUserPosition(latitude, longitude);
         }, (err) => { statusText.innerText = `GPS Error: ${err.message}`; }, { enableHighAccuracy: true });
     }
