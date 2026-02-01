@@ -1,0 +1,80 @@
+body {
+    font-family: "Trebuchet MS", Trebuchet, Arial, sans-serif;
+    text-align: center;
+    margin: 0;
+    padding: 24px 16px 40px;
+}
+
+h1 {
+    font-size: 2.4rem;
+    margin: 12px 0 18px;
+}
+
+#status,
+#coords,
+#heading-display,
+#nearest-distance,
+#nearest-name {
+    margin: 6px 0;
+}
+
+#locate-me {
+    margin: 10px 0 18px;
+    padding: 10px 16px;
+    font-size: 1rem;
+}
+
+#compass-container {
+    width: 280px;
+    height: 280px;
+    border: 5px solid #333;
+    border-radius: 50%;
+    margin: 18px auto 12px;
+    position: relative;
+    overflow: hidden;
+}
+
+#compass-disk {
+    width: 100%;
+    height: 100%;
+    background: radial-gradient(circle, #fff 60%, #eee 100%);
+    position: absolute;
+    transition: transform 0.1s ease-out;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: bold;
+}
+
+.needle {
+    position: absolute;
+    top: 0;
+    left: 50%;
+    width: 4px;
+    height: 140px;
+    background: red;
+    transform: translateX(-50%);
+    z-index: 10;
+}
+
+/* Marks for N, E, S, W */
+.label {
+    position: absolute;
+}
+
+.n {
+    top: 10px;
+    color: red;
+}
+
+.e {
+    right: 10px;
+}
+
+.s {
+    bottom: 10px;
+}
+
+.w {
+    left: 10px;
+}

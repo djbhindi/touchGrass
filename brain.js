@@ -1,0 +1,66 @@
+// State + logic for mapping sensors to nearby nature.
+class NatureBrain {
+    constructor(sectorCount = 16) {
+        this.sectorCount = sectorCount;
+        this.sectorAngle = 360 / sectorCount;
+        this.allGrassyAreas = [];
+        this.lastFetchLocation = { lat: null, lon: null };
+        this.isFetching = false;
+        this.sectors = Array(sectorCount).fill(null).map(() => ({ distance: Infinity }));
+
+        // Smoothing properties
+        this.currentHeading = 0;
+        this.smoothingFactor = 0.15;
+    }
+
+    processSensorData(event) {
+        let rawHeading = 0;
+        if (event.webkitCompassHeading) rawHeading = event.webkitCompassHeading;
+        else if (event.alpha !== null) rawHeading = 360 - event.alpha;
+        else return null;
+
+        if (rawHeading === 0 && this.currentHeading > 1) return this.currentHeading;
+
+        let diff = rawHeading - this.currentHeading;
+        if (diff > 180) diff -= 360;
+        if (diff < -180) diff += 360;
+
+        this.currentHeading = (this.currentHeading + diff * this.smoothingFactor + 360) % 360;
+        return this.currentHeading;
+    }
+
+    updateUserPosition(userLat, userLon) {
+        this.checkFetchThreshold(userLat, userLon);
+        this.sectors = Array(this.sectorCount).fill(null).map(() => ({ distance: Infinity }));
+
+        this.allGrassyAreas.forEach(area => {
+            const dist = getDistance(userLat, userLon, area.lat, area.lon);
+            const bear = getBearing(userLat, userLon, area.lat, area.lon);
+            const idx = Math.floor(((bear + (this.sectorAngle / 2)) % 360) / this.sectorAngle);
+
+            if (dist < this.sectors[idx].distance) {
+                this.sectors[idx] = { ...area, distance: dist };
+            }
+        });
+    }
+
+    async checkFetchThreshold(lat, lon) {
+        if (this.isFetching) return;
+        const moveDist = this.lastFetchLocation.lat
+            ? getDistance(lat, lon, this.lastFetchLocation.lat, this.lastFetchLocation.lon) * 1000
+            : Infinity;
+        if (moveDist > 50) {
+            this.isFetching = true;
+            statusText.innerText = "Refreshing map data...";
+            this.allGrassyAreas = await fetchNearbyGrass(lat, lon);
+            this.lastFetchLocation = { lat, lon };
+            this.isFetching = false;
+            statusText.innerText = "Map data updated.";
+        }
+    }
+
+    getAreaInBearing(userBearing) {
+        const idx = Math.floor(((userBearing + (this.sectorAngle / 2)) % 360) / this.sectorAngle);
+        return this.sectors[idx];
+    }
+}
