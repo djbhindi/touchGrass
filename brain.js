@@ -7,6 +7,8 @@ class NatureBrain {
         this.lastFetchLocation = { lat: null, lon: null };
         this.isFetching = false;
         this.sectors = Array(sectorCount).fill(null).map(() => ({ distance: Infinity }));
+        this.isTouchingGrass = false;
+        this.touchingAreaName = "";
 
         // Smoothing properties
         this.currentHeading = 0;
@@ -32,14 +34,33 @@ class NatureBrain {
     updateUserPosition(userLat, userLon) {
         this.checkFetchThreshold(userLat, userLon);
         this.sectors = Array(this.sectorCount).fill(null).map(() => ({ distance: Infinity }));
+        this.isTouchingGrass = false;
+        this.touchingAreaName = "";
 
         this.allGrassyAreas.forEach(area => {
-            const dist = getDistance(userLat, userLon, area.lat, area.lon);
-            const bear = getBearing(userLat, userLon, area.lat, area.lon);
+            if (!this.isTouchingGrass && isPointInPolygon(userLat, userLon, area.geometry)) {
+                this.isTouchingGrass = true;
+                this.touchingAreaName = area.name;
+            }
+
+            const nearest = getNearestPointOnGeometry(
+                userLat,
+                userLon,
+                area.geometry,
+                area.lat,
+                area.lon
+            );
+            const dist = nearest.distanceKm;
+            const bear = getBearing(userLat, userLon, nearest.lat, nearest.lon);
             const idx = Math.floor(((bear + (this.sectorAngle / 2)) % 360) / this.sectorAngle);
 
             if (dist < this.sectors[idx].distance) {
-                this.sectors[idx] = { ...area, distance: dist };
+                this.sectors[idx] = {
+                    ...area,
+                    distance: dist,
+                    targetLat: nearest.lat,
+                    targetLon: nearest.lon
+                };
             }
         });
     }
@@ -65,5 +86,12 @@ class NatureBrain {
     getAreaInBearing(userBearing) {
         const idx = Math.floor(((userBearing + (this.sectorAngle / 2)) % 360) / this.sectorAngle);
         return this.sectors[idx];
+    }
+
+    getTouchingState() {
+        return {
+            isTouchingGrass: this.isTouchingGrass,
+            touchingAreaName: this.touchingAreaName
+        };
     }
 }

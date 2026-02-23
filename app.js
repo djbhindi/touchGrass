@@ -5,6 +5,7 @@ const compassDisk = document.getElementById('compass-disk');
 const headingDisplay = document.getElementById('heading-display');
 const distElement = document.getElementById('nearest-distance');
 const nameElement = document.getElementById('nearest-name');
+const touchingBanner = document.getElementById('touching-grass-banner');
 
 const brain = new NatureBrain(16);
 let displayHeading = null;
@@ -24,7 +25,7 @@ function setBackgroundByDistance(distanceKm) {
     document.body.style.backgroundColor = `hsl(120, ${saturation}%, ${lightness}%)`;
 }
 
-function updateUI(item, heading) {
+function updateUI(item, heading, touchingState) {
     headingDisplay.innerText = `${Math.round(heading)}°`;
     if (displayHeading === null) {
         displayHeading = heading;
@@ -43,6 +44,17 @@ function updateUI(item, heading) {
         distElement.innerText = "Scanning for nature...";
         nameElement.innerText = "";
         setBackgroundByDistance(null);
+    }
+
+    if (touchingState.isTouchingGrass) {
+        touchingBanner.classList.add('visible');
+        document.body.classList.add('touching-grass');
+        distElement.innerText = "You're touching grass";
+        nameElement.innerText = touchingState.touchingAreaName || "";
+        setBackgroundByDistance(0);
+    } else {
+        touchingBanner.classList.remove('visible');
+        document.body.classList.remove('touching-grass');
     }
 }
 
@@ -118,6 +130,7 @@ function handleOrientationEvent(event) {
     const heading = brain.processSensorData(event);
     if (heading !== null) {
         const target = brain.getAreaInBearing(heading);
-        updateUI(target, heading);
+        const touchingState = brain.getTouchingState();
+        updateUI(target, heading, touchingState);
     }
 }
