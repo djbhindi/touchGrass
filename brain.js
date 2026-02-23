@@ -76,7 +76,12 @@ class NatureBrain {
             statusText.innerText = isInitialFetch
                 ? "Looking for grass..."
                 : "You moved! Looking for new grass.";
+            const fetchStart = performance.now();
             this.allGrassyAreas = await fetchNearbyGrass(lat, lon);
+            const fetchMs = performance.now() - fetchStart;
+            console.log(
+                `[NatureBrain] fetch threshold hit (moved ${moveDist.toFixed(1)}m) -> ${this.allGrassyAreas.length} areas in ${fetchMs.toFixed(0)}ms`
+            );
             this.lastFetchLocation = { lat, lon };
             this.isFetching = false;
             statusText.innerText = "";
