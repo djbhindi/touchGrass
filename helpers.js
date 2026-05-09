@@ -90,7 +90,14 @@ function getNearestPointOnGeometry(userLat, userLon, geometry, fallbackLat, fall
 }
 
 function isPointInPolygon(lat, lon, geometry) {
-    if (!geometry || geometry.length < 3) return false;
+    if (!geometry || geometry.length < 4) return false;
+
+    // Only treat closed rings as polygons. Overpass geometry can include
+    // open ways/paths, which should not trigger "touching grass" state.
+    const first = geometry[0];
+    const last = geometry[geometry.length - 1];
+    const isClosedRing = Math.abs(first.lat - last.lat) < 1e-7 && Math.abs(first.lon - last.lon) < 1e-7;
+    if (!isClosedRing) return false;
 
     let inside = false;
     for (let i = 0, j = geometry.length - 1; i < geometry.length; j = i++) {
