@@ -26,7 +26,8 @@ function setBackgroundByDistance(distanceKm) {
 }
 
 function updateUI(item, heading, touchingState) {
-    headingDisplay.innerText = `${Math.round(heading)}°`;
+    // Use HTML entity so display is correct even if document/script charset is wrong (avoids "Â°").
+    headingDisplay.innerHTML = `${Math.round(heading)}&#176;`;
     if (displayHeading === null) {
         displayHeading = heading;
     } else {
