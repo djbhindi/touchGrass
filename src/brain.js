@@ -13,6 +13,10 @@ class NatureBrain {
         // Smoothing properties
         this.currentHeading = 0;
         this.smoothingFactor = 0.15;
+
+        /** Last GPS fix; used to rebuild sectors after async Overpass returns. */
+        this._lastUserLat = null;
+        this._lastUserLon = null;
     }
 
     processSensorData(event) {
@@ -32,7 +36,24 @@ class NatureBrain {
     }
 
     updateUserPosition(userLat, userLon) {
-        this.checkFetchThreshold(userLat, userLon);
+        this._lastUserLat = userLat;
+        this._lastUserLon = userLon;
+        void this.checkFetchThreshold(userLat, userLon);
+        const t0 = performance.now();
+        this._recomputeSectors(userLat, userLon);
+        const sectorMs = performance.now() - t0;
+        if (this.allGrassyAreas.length > 0 && sectorMs > 40) {
+            console.log(
+                `[NatureBrain] sector pass (${this.allGrassyAreas.length} areas, GPS-driven) ${sectorMs.toFixed(1)}ms`
+            );
+        }
+    }
+
+    /**
+     * Assigns nearest grass per compass sector from `this.allGrassyAreas`.
+     * O(areas × vertices); dominates CPU once Overpass data is loaded.
+     */
+    _recomputeSectors(userLat, userLon) {
         this.sectors = Array(this.sectorCount).fill(null).map(() => ({ distance: Infinity }));
         this.isTouchingGrass = false;
         this.touchingAreaName = "";
@@ -76,15 +97,44 @@ class NatureBrain {
             statusText.innerText = isInitialFetch
                 ? "Looking for grass..."
                 : "You moved! Looking for new grass.";
-            const fetchStart = performance.now();
-            this.allGrassyAreas = await fetchNearbyGrass(lat, lon);
-            const fetchMs = performance.now() - fetchStart;
+            const wallStart = performance.now();
             console.log(
-                `[NatureBrain] fetch threshold hit (moved ${moveDist.toFixed(1)}m) -> ${this.allGrassyAreas.length} areas in ${fetchMs.toFixed(0)}ms`
+                `[NatureBrain] starting single Overpass POST (not parallel) — move=${moveDist.toFixed(0)}m from last fetch`
             );
-            this.lastFetchLocation = { lat, lon };
-            this.isFetching = false;
-            statusText.innerText = "";
+            try {
+                const fetchStart = performance.now();
+                this.allGrassyAreas = await fetchNearbyGrass(lat, lon);
+                const fetchWallMs = performance.now() - fetchStart;
+                console.log(
+                    `[NatureBrain] Overpass await done: ${this.allGrassyAreas.length} areas in ${fetchWallMs.toFixed(0)}ms wall time`
+                );
+                this.lastFetchLocation = { lat, lon };
+
+                let sectorMsPostFetch = 0;
+                if (this._lastUserLat !== null && this._lastUserLon !== null) {
+                    const tSector = performance.now();
+                    this._recomputeSectors(this._lastUserLat, this._lastUserLon);
+                    sectorMsPostFetch = performance.now() - tSector;
+                    console.log(
+                        `[NatureBrain] sector pass (${this.allGrassyAreas.length} areas, post-fetch) ${sectorMsPostFetch.toFixed(1)}ms`
+                    );
+                }
+                window.dispatchEvent(
+                    new CustomEvent("touchgrass:grass-loaded", {
+                        detail: {
+                            fetchMs: fetchWallMs,
+                            sectorMs: sectorMsPostFetch,
+                            areas: this.allGrassyAreas.length,
+                        },
+                    })
+                );
+            } finally {
+                this.isFetching = false;
+                statusText.innerText = "";
+                console.log(
+                    `[NatureBrain] fetch pipeline total (threshold→UI-ready branch) ${(performance.now() - wallStart).toFixed(0)}ms`
+                );
+            }
         }
     }
 

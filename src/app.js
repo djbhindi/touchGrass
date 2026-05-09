@@ -6,14 +6,76 @@ const headingDisplay = document.getElementById('heading-display');
 const distElement = document.getElementById('nearest-distance');
 const nameElement = document.getElementById('nearest-name');
 const touchingBanner = document.getElementById('touching-grass-banner');
+const debugTimingBar = document.getElementById('debug-timing-bar');
+
+function touchGrassDebugEnabled() {
+    try {
+        return (
+            new URLSearchParams(location.search).has("debug") ||
+            localStorage.getItem("touchgrassDebug") === "1"
+        );
+    } catch {
+        return new URLSearchParams(location.search).has("debug");
+    }
+}
+
+const DEBUG_UI = touchGrassDebugEnabled();
+
+function formatMs(n) {
+    if (n == null || Number.isNaN(n)) return "—";
+    return `${Math.round(n)} ms`;
+}
+
+function updateDebugTimingBar(metrics) {
+    if (!DEBUG_UI || !metrics) return;
+    const fetchEl = document.getElementById("debug-fetch-ms");
+    const sectorEl = document.getElementById("debug-sector-ms");
+    const areasEl = document.getElementById("debug-areas-count");
+    const navGrassEl = document.getElementById("debug-nav-grass-ms");
+    const navFirstGeoEl = document.getElementById("debug-nav-first-geo-ms");
+    const geoWaitEl = document.getElementById("debug-geo-wait-ms");
+    const geoAccEl = document.getElementById("debug-geo-acc");
+    if (fetchEl && metrics.fetchMs != null) fetchEl.textContent = String(Math.round(metrics.fetchMs));
+    if (sectorEl && metrics.sectorMs != null) sectorEl.textContent = String(Math.round(metrics.sectorMs));
+    if (areasEl && metrics.areas != null) areasEl.textContent = String(metrics.areas);
+    if (navGrassEl && metrics.navToGrassReadyMs != null) {
+        navGrassEl.textContent = formatMs(metrics.navToGrassReadyMs);
+    }
+    if (navFirstGeoEl && metrics.navToFirstGeoMs != null) {
+        navFirstGeoEl.textContent = formatMs(metrics.navToFirstGeoMs);
+    }
+    if (geoWaitEl && metrics.watchToFirstGeoMs != null) {
+        geoWaitEl.textContent = String(Math.round(metrics.watchToFirstGeoMs));
+    }
+    if (geoAccEl && metrics.firstGeoAccuracyM != null) {
+        geoAccEl.textContent = `${Math.round(metrics.firstGeoAccuracyM)} m`;
+    }
+}
+
+/** Ms from navigation start until first successful geolocation callback (explains most “long reload”). */
+let msNavToFirstGeo = null;
+/** Ms from watchPosition() until first callback (GPS subsystem / permission). */
+let msWatchToFirstGeo = null;
+/** Horizontal accuracy (m) reported on first fix. */
+let firstGeoAccuracyM = null;
+/** performance.now() when watchPosition was registered. */
+let perfWhenGeoWatchStarted = null;
 
 const brain = new NatureBrain(16);
 let displayHeading = null;
+/** Set when DeviceOrientation yields a real compass heading; if still null, we assume north (0°). */
+let compassHeadingDeg = null;
 let trackingStarted = false;
 let geoWatchId = null;
 let absoluteOrientationSeen = false;
 let fallbackTimerId = null;
 let hasLocation = false;
+
+function refreshMainUI() {
+    const heading = compassHeadingDeg !== null ? compassHeadingDeg : 0;
+    const target = brain.getAreaInBearing(heading);
+    updateUI(target, heading, brain.getTouchingState());
+}
 
 // 2. UI Render Function
 function setBackgroundByDistance(distanceKm) {
@@ -60,7 +122,35 @@ function updateUI(item, heading, touchingState) {
 }
 
 // 3. Execution / Event Listeners
+window.addEventListener("touchgrass:grass-loaded", (ev) => {
+    const d = ev.detail || {};
+    const navToGrassReadyMs = performance.now();
+    console.log("[app] Overpass finished → sectors rebuilt; refreshing UI");
+    if (DEBUG_UI) {
+        console.log("[app] debug pipeline", {
+            navToFirstGeoMs: msNavToFirstGeo,
+            watchToFirstGeoMs: msWatchToFirstGeo,
+            fetchPlusJsonMs: d.fetchMs,
+            sectorMs: d.sectorMs,
+            navToGrassReadyMs,
+            areas: d.areas,
+        });
+        updateDebugTimingBar({
+            ...d,
+            navToGrassReadyMs,
+            navToFirstGeoMs: msNavToFirstGeo,
+            watchToFirstGeoMs: msWatchToFirstGeo,
+            firstGeoAccuracyM,
+        });
+    }
+    refreshMainUI();
+});
+
 document.addEventListener('DOMContentLoaded', () => {
+    if (DEBUG_UI && debugTimingBar) {
+        document.body.classList.add("debug-mode");
+        debugTimingBar.hidden = false;
+    }
     statusText.innerText = "Waiting for location...";
     startTracking(false);
 });
@@ -105,8 +195,22 @@ async function startTracking(fromUserGesture) {
 
     // Start Geolocation (auto-start)
     if (geoWatchId === null) {
+        perfWhenGeoWatchStarted = performance.now();
         geoWatchId = navigator.geolocation.watchPosition((pos) => {
             const { latitude, longitude, accuracy } = pos.coords;
+            const geoT0 = performance.now();
+            if (msWatchToFirstGeo == null && perfWhenGeoWatchStarted != null) {
+                msWatchToFirstGeo = geoT0 - perfWhenGeoWatchStarted;
+                msNavToFirstGeo = geoT0;
+                firstGeoAccuracyM = accuracy;
+                if (DEBUG_UI) {
+                    updateDebugTimingBar({
+                        navToFirstGeoMs: msNavToFirstGeo,
+                        watchToFirstGeoMs: msWatchToFirstGeo,
+                        firstGeoAccuracyM,
+                    });
+                }
+            }
             if (!hasLocation) {
                 hasLocation = true;
                 if (statusText.innerText === "Waiting for location...") {
@@ -114,6 +218,11 @@ async function startTracking(fromUserGesture) {
                 }
             }
             brain.updateUserPosition(latitude, longitude);
+            refreshMainUI();
+            const geoMs = performance.now() - geoT0;
+            if (geoMs > 25) {
+                console.log(`[app] watchPosition handler (brain + UI) ${geoMs.toFixed(1)}ms`);
+            }
         }, (err) => { statusText.innerText = `GPS Error: ${err.message}`; }, { enableHighAccuracy: true });
     }
 }
@@ -130,8 +239,7 @@ function handleOrientationEvent(event) {
     }
     const heading = brain.processSensorData(event);
     if (heading !== null) {
-        const target = brain.getAreaInBearing(heading);
-        const touchingState = brain.getTouchingState();
-        updateUI(target, heading, touchingState);
+        compassHeadingDeg = heading;
+        refreshMainUI();
     }
 }

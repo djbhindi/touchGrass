@@ -7,6 +7,14 @@ body {
     transition: background-color 0.4s ease;
 }
 
+body.debug-mode {
+    padding-bottom: 168px;
+}
+
+body.debug-mode #status {
+    bottom: 160px;
+}
+
 body.touching-grass {
     animation: grassPulse 2.2s ease-in-out infinite;
 }
@@ -32,6 +40,48 @@ h1 {
     color: #4a5a4a;
     pointer-events: none;
 }
+
+.debug-timing-bar {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 60;
+    padding: 10px 14px 14px;
+    font-size: 0.8rem;
+    text-align: center;
+    background: rgba(248, 252, 248, 0.96);
+    border-top: 1px solid #b8ccb8;
+    color: #2a382a;
+    pointer-events: none;
+    line-height: 1.35;
+}
+
+.debug-timing-title {
+    font-weight: 700;
+    font-size: 0.72rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: #4a5f4a;
+    margin-bottom: 6px;
+}
+
+.debug-timing-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    max-width: 420px;
+    margin: 0 auto 4px;
+    gap: 12px;
+    text-align: left;
+}
+
+.debug-timing-meta {
+    font-size: 0.72rem;
+    color: #5a6a5a;
+    margin-top: 4px;
+}
+
 
 #locate-me {
     margin: 10px 0 18px;
