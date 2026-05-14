@@ -3,9 +3,12 @@
 // Do NOT use `nwr[...]` with one `out`: it merges nodes + ways + relations — often hundreds of nodes.
 //
 // One Overpass POST, two reads:
-//   1) ways + relations → MUST use `out geom` (not `out geom center`). On overpass-api.de,
-//      `out geom center` omits the way-level `geometry` array and only emits `center`.
-//   2) nodes → `out body`.
+//   1) ways + relations → either `out geom` (full vertex polygons, accurate nearest-edge distance
+//      and polygon containment for "touching grass") or `out center` (centroid only, ~10x smaller
+//      payload, only good for rough distance — used for the fast first-paint tier).
+//      Note: on overpass-api.de, `out geom center` is broken (omits `geometry` and emits only `center`),
+//      so pick exactly one; do not combine them.
+//   2) nodes → `out body` (nodes are already points; no geometry to expand).
 //
 function flattenRelationOuterGeometry(rel) {
     if (!rel.members) return [];
@@ -40,7 +43,7 @@ function anchorLatLon(el, geometryPts) {
     return { lat: NaN, lon: NaN };
 }
 
-async function fetchNearbyGrass(lat, lon, radius = 3000) {
+async function fetchNearbyGrass(lat, lon, radius = 3000, { withGeometry = true, serverTimeoutSec = 25 } = {}) {
     const url = "https://overpass-api.de/api/interpreter";
     const around = `around:${radius},${lat},${lon}`;
     const tagTriples = [
@@ -53,11 +56,12 @@ async function fetchNearbyGrass(lat, lon, radius = 3000) {
         .flatMap(([k, v]) => [sel("way", k, v), sel("relation", k, v)])
         .join("");
     const nodeSelectors = tagTriples.map(([k, v]) => sel("node", k, v)).join("");
-    const query = `[out:json][timeout:25];(${wayRelSelectors});out geom;(${nodeSelectors});out body;`;
+    const wayRelOut = withGeometry ? "out geom" : "out center";
+    const query = `[out:json][timeout:${serverTimeoutSec}];(${wayRelSelectors});${wayRelOut};(${nodeSelectors});out body;`;
     const totalStart = performance.now();
     try {
         console.log(
-            `[fetchNearbyGrass] ONE HTTP POST to Overpass (no parallel batch); radius=${radius}m`
+            `[fetchNearbyGrass] ONE HTTP POST to Overpass (no parallel batch); radius=${radius}m mode=${withGeometry ? "geom" : "center"} timeout=${serverTimeoutSec}s`
         );
         const networkStart = performance.now();
         const response = await fetch(url, { method: "POST", body: query });

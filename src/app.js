@@ -67,8 +67,19 @@ let hasLocation = false;
 
 function refreshMainUI() {
     const heading = compassHeadingDeg !== null ? compassHeadingDeg : 0;
-    const target = brain.getAreaInBearing(heading);
-    updateUI(target, heading, brain.getTouchingState());
+    let target = brain.getAreaInBearing(heading);
+    let outOfBearing = false;
+    if (!target || target.distance === Infinity) {
+        const fallback = brain.getNearestArea();
+        if (fallback) {
+            target = fallback;
+            outOfBearing = true;
+        }
+    }
+    updateUI(target, heading, brain.getTouchingState(), {
+        outOfBearing,
+        dataLoaded: brain.hasData(),
+    });
 }
 
 // 2. UI Render Function
@@ -81,7 +92,8 @@ function setBackgroundByDistance(distanceKm) {
     document.body.style.backgroundColor = `hsl(120, ${saturation}%, ${lightness}%)`;
 }
 
-function updateUI(item, heading, touchingState) {
+function updateUI(item, heading, touchingState, opts = {}) {
+    const { outOfBearing = false, dataLoaded = false } = opts;
     // Use HTML entity so display is correct even if document/script charset is wrong (avoids "Â°").
     headingDisplay.innerHTML = `${Math.round(heading)}&#176;`;
     if (displayHeading === null) {
@@ -91,14 +103,15 @@ function updateUI(item, heading, touchingState) {
         displayHeading += diff;
     }
     compassDisk.style.transform = `rotate(${-displayHeading}deg)`;
-    
+
     if (item && item.distance !== Infinity) {
         const d = item.distance < 1 ? `${(item.distance * 1000).toFixed(0)}m` : `${item.distance.toFixed(2)}km`;
-        distElement.innerText = `${d} to Grass`;
+        distElement.innerText = outOfBearing ? `${d} to Grass — turn to face it` : `${d} to Grass`;
         nameElement.innerText = item.name;
         setBackgroundByDistance(item.distance);
     } else {
-        distElement.innerText = "Scanning for nature...";
+        // Once we have any data at all, "scanning" is a lie — we genuinely found nothing nearby.
+        distElement.innerText = dataLoaded ? "No grass found nearby." : "Scanning for nature...";
         nameElement.innerText = "";
         setBackgroundByDistance(null);
     }

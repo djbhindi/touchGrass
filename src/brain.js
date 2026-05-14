@@ -116,9 +116,9 @@ class NatureBrain {
             `[NatureBrain] starting tiered fetch (gen ${fetchGen}) — move=${moveDist.toFixed(0)}m: tier 1 = 800m, tier 2 = 3000m, in parallel`
         );
 
-        const runTier = async (tier, radiusM) => {
+        const runTier = async (tier, radiusM, fetchOpts) => {
             const fetchStart = performance.now();
-            const areas = await fetchNearbyGrass(lat, lon, radiusM);
+            const areas = await fetchNearbyGrass(lat, lon, radiusM, fetchOpts);
             const fetchWallMs = performance.now() - fetchStart;
 
             const stale = fetchGen !== this._fetchGeneration;
@@ -163,7 +163,14 @@ class NatureBrain {
         };
 
         try {
-            await Promise.all([runTier(1, 800), runTier(2, 3000)]);
+            // Tier 1: small radius + centroids only → first paint as fast as possible.
+            //   Distance estimates are rough (centroid, not nearest edge) and "touching grass"
+            //   is disabled this round (no polygons). Tier 2 overwrites with precise data.
+            // Tier 2: full radius + full polygons → accurate edge distances + touching-grass.
+            await Promise.all([
+                runTier(1, 800, { withGeometry: false, serverTimeoutSec: 8 }),
+                runTier(2, 3000, { withGeometry: true, serverTimeoutSec: 25 }),
+            ]);
         } finally {
             this.isFetching = false;
             statusText.innerText = "";
@@ -176,6 +183,24 @@ class NatureBrain {
     getAreaInBearing(userBearing) {
         const idx = Math.floor(((userBearing + (this.sectorAngle / 2)) % 360) / this.sectorAngle);
         return this.sectors[idx];
+    }
+
+    /**
+     * Closest grass across all sectors, or null when no data has loaded yet.
+     * Used as a fallback when the sector the user is facing happens to be empty,
+     * so the UI can show a real distance instead of "Scanning for nature..." forever.
+     */
+    getNearestArea() {
+        let best = null;
+        for (const s of this.sectors) {
+            if (s.distance === Infinity) continue;
+            if (!best || s.distance < best.distance) best = s;
+        }
+        return best;
+    }
+
+    hasData() {
+        return this.allGrassyAreas.length > 0;
     }
 
     getTouchingState() {
