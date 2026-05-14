@@ -8,11 +8,11 @@ body {
 }
 
 body.debug-mode {
-    padding-bottom: 168px;
+    padding-bottom: 196px;
 }
 
 body.debug-mode #status {
-    bottom: 160px;
+    bottom: 188px;
 }
 
 body.touching-grass {

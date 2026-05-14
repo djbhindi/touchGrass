@@ -17,6 +17,15 @@ class NatureBrain {
         /** Last GPS fix; used to rebuild sectors after async Overpass returns. */
         this._lastUserLat = null;
         this._lastUserLon = null;
+
+        /**
+         * Tiered fetch state:
+         *  - Each fetch round bumps `_fetchGeneration`.
+         *  - Within a round, only a strictly higher tier than `_highestTierApplied` may replace data,
+         *    so a slow tier-1 landing after tier-2 doesn't downgrade results.
+         */
+        this._fetchGeneration = 0;
+        this._highestTierApplied = 0;
     }
 
     processSensorData(event) {
@@ -92,49 +101,75 @@ class NatureBrain {
         const moveDist = this.lastFetchLocation.lat
             ? getDistance(lat, lon, this.lastFetchLocation.lat, this.lastFetchLocation.lon) * 1000
             : Infinity;
-        if (moveDist > 50) {
-            this.isFetching = true;
-            statusText.innerText = isInitialFetch
-                ? "Looking for grass..."
-                : "You moved! Looking for new grass.";
-            const wallStart = performance.now();
-            console.log(
-                `[NatureBrain] starting single Overpass POST (not parallel) — move=${moveDist.toFixed(0)}m from last fetch`
-            );
-            try {
-                const fetchStart = performance.now();
-                this.allGrassyAreas = await fetchNearbyGrass(lat, lon);
-                const fetchWallMs = performance.now() - fetchStart;
-                console.log(
-                    `[NatureBrain] Overpass await done: ${this.allGrassyAreas.length} areas in ${fetchWallMs.toFixed(0)}ms wall time`
-                );
-                this.lastFetchLocation = { lat, lon };
+        if (moveDist <= 50) return;
 
-                let sectorMsPostFetch = 0;
+        this.isFetching = true;
+        this.lastFetchLocation = { lat, lon };
+        statusText.innerText = isInitialFetch
+            ? "Looking for grass..."
+            : "You moved! Looking for new grass.";
+
+        const wallStart = performance.now();
+        const fetchGen = ++this._fetchGeneration;
+        this._highestTierApplied = 0;
+        console.log(
+            `[NatureBrain] starting tiered fetch (gen ${fetchGen}) — move=${moveDist.toFixed(0)}m: tier 1 = 800m, tier 2 = 3000m, in parallel`
+        );
+
+        const runTier = async (tier, radiusM) => {
+            const fetchStart = performance.now();
+            const areas = await fetchNearbyGrass(lat, lon, radiusM);
+            const fetchWallMs = performance.now() - fetchStart;
+
+            const stale = fetchGen !== this._fetchGeneration;
+            const skipEmptyTier1 = tier === 1 && areas.length === 0;
+            const beatenByLargerTier = tier <= this._highestTierApplied;
+            const apply = !stale && !skipEmptyTier1 && !beatenByLargerTier;
+
+            let sectorMsPostFetch = 0;
+            if (apply) {
+                this._highestTierApplied = tier;
+                this.allGrassyAreas = areas;
                 if (this._lastUserLat !== null && this._lastUserLon !== null) {
                     const tSector = performance.now();
                     this._recomputeSectors(this._lastUserLat, this._lastUserLon);
                     sectorMsPostFetch = performance.now() - tSector;
-                    console.log(
-                        `[NatureBrain] sector pass (${this.allGrassyAreas.length} areas, post-fetch) ${sectorMsPostFetch.toFixed(1)}ms`
-                    );
                 }
-                window.dispatchEvent(
-                    new CustomEvent("touchgrass:grass-loaded", {
-                        detail: {
-                            fetchMs: fetchWallMs,
-                            sectorMs: sectorMsPostFetch,
-                            areas: this.allGrassyAreas.length,
-                        },
-                    })
-                );
-            } finally {
-                this.isFetching = false;
-                statusText.innerText = "";
-                console.log(
-                    `[NatureBrain] fetch pipeline total (threshold→UI-ready branch) ${(performance.now() - wallStart).toFixed(0)}ms`
-                );
             }
+
+            const reason = stale
+                ? "stale-generation"
+                : skipEmptyTier1
+                    ? "tier-1 empty, waiting for tier 2"
+                    : beatenByLargerTier
+                        ? "tier-2 already applied"
+                        : "applied";
+            console.log(
+                `[NatureBrain] tier ${tier} (r=${radiusM}m) → ${areas.length} areas in ${fetchWallMs.toFixed(0)}ms (${reason})${apply ? `; sector=${sectorMsPostFetch.toFixed(1)}ms` : ""}`
+            );
+
+            window.dispatchEvent(
+                new CustomEvent("touchgrass:grass-loaded", {
+                    detail: {
+                        tier,
+                        radiusM,
+                        fetchMs: fetchWallMs,
+                        sectorMs: sectorMsPostFetch,
+                        areas: areas.length,
+                        applied: apply,
+                    },
+                })
+            );
+        };
+
+        try {
+            await Promise.all([runTier(1, 800), runTier(2, 3000)]);
+        } finally {
+            this.isFetching = false;
+            statusText.innerText = "";
+            console.log(
+                `[NatureBrain] fetch pipeline total (both tiers) ${(performance.now() - wallStart).toFixed(0)}ms`
+            );
         }
     }
 

@@ -21,40 +21,34 @@ function touchGrassDebugEnabled() {
 
 const DEBUG_UI = touchGrassDebugEnabled();
 
-function formatMs(n) {
-    if (n == null || Number.isNaN(n)) return "—";
-    return `${Math.round(n)} ms`;
-}
-
 function updateDebugTimingBar(metrics) {
     if (!DEBUG_UI || !metrics) return;
-    const fetchEl = document.getElementById("debug-fetch-ms");
-    const sectorEl = document.getElementById("debug-sector-ms");
-    const areasEl = document.getElementById("debug-areas-count");
-    const navGrassEl = document.getElementById("debug-nav-grass-ms");
-    const navFirstGeoEl = document.getElementById("debug-nav-first-geo-ms");
-    const geoWaitEl = document.getElementById("debug-geo-wait-ms");
-    const geoAccEl = document.getElementById("debug-geo-acc");
-    if (fetchEl && metrics.fetchMs != null) fetchEl.textContent = String(Math.round(metrics.fetchMs));
-    if (sectorEl && metrics.sectorMs != null) sectorEl.textContent = String(Math.round(metrics.sectorMs));
-    if (areasEl && metrics.areas != null) areasEl.textContent = String(metrics.areas);
-    if (navGrassEl && metrics.navToGrassReadyMs != null) {
-        navGrassEl.textContent = formatMs(metrics.navToGrassReadyMs);
+    const set = (id, val) => {
+        if (val == null) return;
+        const el = document.getElementById(id);
+        if (el) el.textContent = `${Math.round(val)}`;
+    };
+    set("debug-boot-ms", metrics.bootMs);
+    set("debug-geo-wait-ms", metrics.watchToFirstGeoMs);
+    if (metrics.tier === 1) set("debug-fetch-1-ms", metrics.fetchMs);
+    if (metrics.tier === 2) set("debug-fetch-2-ms", metrics.fetchMs);
+    if (metrics.applied) {
+        set("debug-sector-ms", metrics.sectorMs);
+        set("debug-nav-grass-ms", metrics.navToGrassReadyMs);
+        if (metrics.areas != null) {
+            const a = document.getElementById("debug-areas-count");
+            if (a) a.textContent = String(metrics.areas);
+        }
     }
-    if (navFirstGeoEl && metrics.navToFirstGeoMs != null) {
-        navFirstGeoEl.textContent = formatMs(metrics.navToFirstGeoMs);
-    }
-    if (geoWaitEl && metrics.watchToFirstGeoMs != null) {
-        geoWaitEl.textContent = String(Math.round(metrics.watchToFirstGeoMs));
-    }
-    if (geoAccEl && metrics.firstGeoAccuracyM != null) {
-        geoAccEl.textContent = `${Math.round(metrics.firstGeoAccuracyM)} m`;
+    if (metrics.firstGeoAccuracyM != null) {
+        const acc = document.getElementById("debug-geo-acc");
+        if (acc) acc.textContent = `${Math.round(metrics.firstGeoAccuracyM)} m`;
     }
 }
 
-/** Ms from navigation start until first successful geolocation callback (explains most “long reload”). */
-let msNavToFirstGeo = null;
-/** Ms from watchPosition() until first callback (GPS subsystem / permission). */
+/** Stage 1: ms from navigation start until we registered watchPosition. */
+let msBoot = null;
+/** Stage 2: ms from watchPosition() until first callback (GPS subsystem). */
 let msWatchToFirstGeo = null;
 /** Horizontal accuracy (m) reported on first fix. */
 let firstGeoAccuracyM = null;
@@ -125,25 +119,19 @@ function updateUI(item, heading, touchingState) {
 window.addEventListener("touchgrass:grass-loaded", (ev) => {
     const d = ev.detail || {};
     const navToGrassReadyMs = performance.now();
-    console.log("[app] Overpass finished → sectors rebuilt; refreshing UI");
+    console.log(
+        `[app] grass-loaded tier=${d.tier} radius=${d.radiusM}m fetch=${Math.round(d.fetchMs ?? 0)}ms applied=${d.applied} areas=${d.areas}`
+    );
     if (DEBUG_UI) {
-        console.log("[app] debug pipeline", {
-            navToFirstGeoMs: msNavToFirstGeo,
-            watchToFirstGeoMs: msWatchToFirstGeo,
-            fetchPlusJsonMs: d.fetchMs,
-            sectorMs: d.sectorMs,
-            navToGrassReadyMs,
-            areas: d.areas,
-        });
         updateDebugTimingBar({
             ...d,
             navToGrassReadyMs,
-            navToFirstGeoMs: msNavToFirstGeo,
+            bootMs: msBoot,
             watchToFirstGeoMs: msWatchToFirstGeo,
             firstGeoAccuracyM,
         });
     }
-    refreshMainUI();
+    if (d.applied) refreshMainUI();
 });
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -196,16 +184,16 @@ async function startTracking(fromUserGesture) {
     // Start Geolocation (auto-start)
     if (geoWatchId === null) {
         perfWhenGeoWatchStarted = performance.now();
+        msBoot = perfWhenGeoWatchStarted;
+        if (DEBUG_UI) updateDebugTimingBar({ bootMs: msBoot });
         geoWatchId = navigator.geolocation.watchPosition((pos) => {
             const { latitude, longitude, accuracy } = pos.coords;
             const geoT0 = performance.now();
             if (msWatchToFirstGeo == null && perfWhenGeoWatchStarted != null) {
                 msWatchToFirstGeo = geoT0 - perfWhenGeoWatchStarted;
-                msNavToFirstGeo = geoT0;
                 firstGeoAccuracyM = accuracy;
                 if (DEBUG_UI) {
                     updateDebugTimingBar({
-                        navToFirstGeoMs: msNavToFirstGeo,
                         watchToFirstGeoMs: msWatchToFirstGeo,
                         firstGeoAccuracyM,
                     });

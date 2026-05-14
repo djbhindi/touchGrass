@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <title>Touch Grass!</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <link rel="stylesheet" href="/render/styles.css">
+    <link rel="stylesheet" href="styles.css">
 </head>
 <body>
     <h1>Touch Grass</h1>
@@ -30,34 +30,37 @@
     </div>
 
     <div id="debug-timing-bar" class="debug-timing-bar" hidden aria-live="polite">
-        <div class="debug-timing-title">Debug · pipeline (times are ms since navigation unless noted)</div>
+        <div class="debug-timing-title">Debug · disjoint pipeline stages (sum ≈ total)</div>
         <div class="debug-timing-row">
-            <span>Nav → 1st GPS fix</span>
-            <strong><span id="debug-nav-first-geo-ms">—</span></strong>
+            <span>1. Page boot (nav → watchPosition called)</span>
+            <strong><span id="debug-boot-ms">—</span> ms</strong>
         </div>
         <div class="debug-timing-row">
-            <span>watchPosition → 1st callback</span>
+            <span>2. GPS acquisition (watch → 1st fix)</span>
             <strong><span id="debug-geo-wait-ms">—</span> ms</strong>
         </div>
-        <div class="debug-timing-meta" id="debug-geo-acc-wrap">Accuracy (1st fix): <span id="debug-geo-acc">—</span></div>
         <div class="debug-timing-row">
-            <span>Overpass fetch + JSON</span>
-            <strong><span id="debug-fetch-ms">—</span> ms</strong>
+            <span>3a. Quick fetch (800 m)</span>
+            <strong><span id="debug-fetch-1-ms">—</span> ms</strong>
         </div>
         <div class="debug-timing-row">
-            <span>Distance / sector math</span>
+            <span>3b. Full fetch (3 km)</span>
+            <strong><span id="debug-fetch-2-ms">—</span> ms</strong>
+        </div>
+        <div class="debug-timing-row">
+            <span>4. Distance / sector math</span>
             <strong><span id="debug-sector-ms">—</span> ms</strong>
         </div>
         <div class="debug-timing-row">
-            <span>Nav → grass data ready</span>
-            <strong><span id="debug-nav-grass-ms">—</span></strong>
+            <span>Total (nav → grass ready)</span>
+            <strong><span id="debug-nav-grass-ms">—</span> ms</strong>
         </div>
-        <div class="debug-timing-meta"><span id="debug-areas-count">—</span> areas · fetch runs only after GPS gives a position</div>
+        <div class="debug-timing-meta"><span id="debug-areas-count">—</span> areas · accuracy <span id="debug-geo-acc">—</span></div>
     </div>
 
-    <script src="/src/helpers.js"></script>
-    <script src="/src/data.js"></script>
-    <script src="/src/brain.js"></script>
-    <script src="/src/app.js"></script>
+    <script src="../src/helpers.js"></script>
+    <script src="../src/data.js"></script>
+    <script src="../src/brain.js"></script>
+    <script src="../src/app.js"></script>
 </body>
 </html>
