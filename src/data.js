@@ -4,10 +4,11 @@
 //
 // One Overpass POST, two reads:
 //   1) ways + relations → either `out geom` (full vertex polygons, accurate nearest-edge distance
-//      and polygon containment for "touching grass") or `out center` (centroid only, ~10x smaller
-//      payload, only good for rough distance — used for the fast first-paint tier).
+//      and polygon containment for "touching grass") or `out body bb` (bounding-box rectangle only:
+//      constant ~4 numbers per element, used for the fast first-paint tier so we can still do
+//      cheap nearest-edge + containment approximations without polygon vertices).
 //      Note: on overpass-api.de, `out geom center` is broken (omits `geometry` and emits only `center`),
-//      so pick exactly one; do not combine them.
+//      so don't try to combine modes; pick exactly one geometry modifier.
 //   2) nodes → `out body` (nodes are already points; no geometry to expand).
 //
 function flattenRelationOuterGeometry(rel) {
@@ -43,7 +44,7 @@ function anchorLatLon(el, geometryPts) {
     return { lat: NaN, lon: NaN };
 }
 
-async function fetchNearbyGrass(lat, lon, radius = 3000, { withGeometry = true, serverTimeoutSec = 25 } = {}) {
+async function fetchNearbyGrass(lat, lon, radius = 3000, { geometryMode = "geom", serverTimeoutSec = 25 } = {}) {
     const url = "https://overpass-api.de/api/interpreter";
     const around = `around:${radius},${lat},${lon}`;
     const tagTriples = [
@@ -56,12 +57,12 @@ async function fetchNearbyGrass(lat, lon, radius = 3000, { withGeometry = true, 
         .flatMap(([k, v]) => [sel("way", k, v), sel("relation", k, v)])
         .join("");
     const nodeSelectors = tagTriples.map(([k, v]) => sel("node", k, v)).join("");
-    const wayRelOut = withGeometry ? "out geom" : "out center";
+    const wayRelOut = geometryMode === "bbox" ? "out body bb" : "out geom";
     const query = `[out:json][timeout:${serverTimeoutSec}];(${wayRelSelectors});${wayRelOut};(${nodeSelectors});out body;`;
     const totalStart = performance.now();
     try {
         console.log(
-            `[fetchNearbyGrass] ONE HTTP POST to Overpass (no parallel batch); radius=${radius}m mode=${withGeometry ? "geom" : "center"} timeout=${serverTimeoutSec}s`
+            `[fetchNearbyGrass] ONE HTTP POST to Overpass (no parallel batch); radius=${radius}m mode=${geometryMode} timeout=${serverTimeoutSec}s`
         );
         const networkStart = performance.now();
         const response = await fetch(url, { method: "POST", body: query });
@@ -89,6 +90,10 @@ async function fetchNearbyGrass(lat, lon, radius = 3000, { withGeometry = true, 
                 lat: la,
                 lon: lo,
                 geometry,
+                // `out geom` also emits `bounds` for ways; `out body bb` emits only `bounds`.
+                // Nodes never have `bounds`. Downstream uses bounds as a coarse polygon
+                // stand-in when geometry is empty.
+                bounds: el.bounds || null,
             };
         });
         const mapMs = performance.now() - mapStart;
@@ -102,6 +107,9 @@ async function fetchNearbyGrass(lat, lon, radius = 3000, { withGeometry = true, 
     } catch (err) {
         const totalMs = performance.now() - totalStart;
         console.log(`[fetchNearbyGrass] failed after ${totalMs.toFixed(0)}ms`, err);
-        return [];
+        // Re-throw so the caller can distinguish "Overpass returned 0 features" (a valid result
+        // meaning there's genuinely no grass nearby) from "the fetch itself died" (in which case
+        // the caller should keep its previous data rather than wiping it).
+        throw err;
     }
 }

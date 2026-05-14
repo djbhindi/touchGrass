@@ -89,6 +89,37 @@ function getNearestPointOnGeometry(userLat, userLon, geometry, fallbackLat, fall
     };
 }
 
+/**
+ * Coarse polygon stand-in for tier-1 (no-geometry) data: treat each park as its
+ * axis-aligned lat/lon bounding box. Nearest point = clamp the user's lat/lon
+ * into the rectangle; if the clamp doesn't move them, they're "inside."
+ *
+ * Trade-off vs `getNearestPointOnGeometry`:
+ *   - Distance is a strict lower bound (bbox ⊇ polygon), so we never *over*-estimate.
+ *   - Containment over-fires for non-rectangular parks (L-shaped, etc.). Acceptable
+ *     during tier 1 because tier 2's polygon data overwrites within seconds.
+ */
+function getNearestPointOnBBox(userLat, userLon, bounds) {
+    if (!bounds) return null;
+    const lat = Math.max(bounds.minlat, Math.min(bounds.maxlat, userLat));
+    const lon = Math.max(bounds.minlon, Math.min(bounds.maxlon, userLon));
+    return {
+        lat,
+        lon,
+        distanceKm: getDistance(userLat, userLon, lat, lon),
+    };
+}
+
+function isPointInBBox(lat, lon, bounds) {
+    if (!bounds) return false;
+    return (
+        lat >= bounds.minlat &&
+        lat <= bounds.maxlat &&
+        lon >= bounds.minlon &&
+        lon <= bounds.maxlon
+    );
+}
+
 function isPointInPolygon(lat, lon, geometry) {
     if (!geometry || geometry.length < 4) return false;
 

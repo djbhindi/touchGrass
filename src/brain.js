@@ -68,18 +68,46 @@ class NatureBrain {
         this.touchingAreaName = "";
 
         this.allGrassyAreas.forEach(area => {
-            if (!this.isTouchingGrass && isPointInPolygon(userLat, userLon, area.geometry)) {
-                this.isTouchingGrass = true;
-                this.touchingAreaName = area.name;
+            // Containment + nearest-point strategy, in order of precision:
+            //   1. Closed polygon vertices (`out geom`) — exact.
+            //   2. Axis-aligned bounding box (`out body bb`) — over-approximates containment,
+            //      under-estimates distance, but still useful: "in the bbox of Central Park"
+            //      is a much better signal than "X km from Central Park's centroid."
+            //   3. Anchor point only (nodes, or a way with neither geom nor bounds) — distance
+            //      to a single point; never reports containment.
+            const hasPolygon = area.geometry && area.geometry.length >= 4;
+            const hasBBox = !!area.bounds;
+
+            if (!this.isTouchingGrass) {
+                if (hasPolygon && isPointInPolygon(userLat, userLon, area.geometry)) {
+                    this.isTouchingGrass = true;
+                    this.touchingAreaName = area.name;
+                } else if (!hasPolygon && hasBBox && isPointInBBox(userLat, userLon, area.bounds)) {
+                    this.isTouchingGrass = true;
+                    this.touchingAreaName = area.name;
+                }
             }
 
-            const nearest = getNearestPointOnGeometry(
-                userLat,
-                userLon,
-                area.geometry,
-                area.lat,
-                area.lon
-            );
+            let nearest;
+            if (hasPolygon) {
+                nearest = getNearestPointOnGeometry(
+                    userLat,
+                    userLon,
+                    area.geometry,
+                    area.lat,
+                    area.lon
+                );
+            } else if (hasBBox) {
+                nearest = getNearestPointOnBBox(userLat, userLon, area.bounds);
+            } else {
+                nearest = getNearestPointOnGeometry(
+                    userLat,
+                    userLon,
+                    null,
+                    area.lat,
+                    area.lon
+                );
+            }
             const dist = nearest.distanceKm;
             const bear = getBearing(userLat, userLon, nearest.lat, nearest.lon);
             const idx = Math.floor(((bear + (this.sectorAngle / 2)) % 360) / this.sectorAngle);
@@ -105,6 +133,16 @@ class NatureBrain {
 
         this.isFetching = true;
         this.lastFetchLocation = { lat, lon };
+
+        // Tier 1 (bbox-only, 800 m) is purely a first-paint accelerator. Once we have any
+        // polygon-quality area on screen, the user's "nearest grass" display is already
+        // accurate, so subsequent moves silently re-fetch only tier 2 and keep the previous
+        // polygons live in `allGrassyAreas` until tier 2 lands and atomically swaps them.
+        const haveGeomData = this.allGrassyAreas.some(
+            (a) => a.geometry && a.geometry.length > 0
+        );
+        const runFirstPaintTier = !haveGeomData;
+
         statusText.innerText = isInitialFetch
             ? "Looking for grass..."
             : "You moved! Looking for new grass.";
@@ -113,18 +151,25 @@ class NatureBrain {
         const fetchGen = ++this._fetchGeneration;
         this._highestTierApplied = 0;
         console.log(
-            `[NatureBrain] starting tiered fetch (gen ${fetchGen}) — move=${moveDist.toFixed(0)}m: tier 1 = 800m, tier 2 = 3000m, in parallel`
+            `[NatureBrain] starting tiered fetch (gen ${fetchGen}) — move=${moveDist.toFixed(0)}m: ${runFirstPaintTier ? "tier 1 = 800m (bbox) + tier 2 = 3000m (geom)" : "tier 2 = 3000m (geom) only; keeping existing polygons live until it lands"}`
         );
 
         const runTier = async (tier, radiusM, fetchOpts) => {
             const fetchStart = performance.now();
-            const areas = await fetchNearbyGrass(lat, lon, radiusM, fetchOpts);
+            let areas = null;
+            let fetchError = null;
+            try {
+                areas = await fetchNearbyGrass(lat, lon, radiusM, fetchOpts);
+            } catch (err) {
+                fetchError = err;
+            }
             const fetchWallMs = performance.now() - fetchStart;
 
             const stale = fetchGen !== this._fetchGeneration;
-            const skipEmptyTier1 = tier === 1 && areas.length === 0;
+            const failed = fetchError !== null;
+            const skipEmptyTier1 = tier === 1 && !failed && areas.length === 0;
             const beatenByLargerTier = tier <= this._highestTierApplied;
-            const apply = !stale && !skipEmptyTier1 && !beatenByLargerTier;
+            const apply = !failed && !stale && !skipEmptyTier1 && !beatenByLargerTier;
 
             let sectorMsPostFetch = 0;
             if (apply) {
@@ -137,15 +182,18 @@ class NatureBrain {
                 }
             }
 
-            const reason = stale
-                ? "stale-generation"
-                : skipEmptyTier1
-                    ? "tier-1 empty, waiting for tier 2"
-                    : beatenByLargerTier
-                        ? "tier-2 already applied"
-                        : "applied";
+            const reason = failed
+                ? "fetch-failed (keeping previous data)"
+                : stale
+                    ? "stale-generation"
+                    : skipEmptyTier1
+                        ? "tier-1 empty, waiting for tier 2"
+                        : beatenByLargerTier
+                            ? "tier-2 already applied"
+                            : "applied";
+            const areasCount = failed ? 0 : areas.length;
             console.log(
-                `[NatureBrain] tier ${tier} (r=${radiusM}m) → ${areas.length} areas in ${fetchWallMs.toFixed(0)}ms (${reason})${apply ? `; sector=${sectorMsPostFetch.toFixed(1)}ms` : ""}`
+                `[NatureBrain] tier ${tier} (r=${radiusM}m) → ${areasCount} areas in ${fetchWallMs.toFixed(0)}ms (${reason})${apply ? `; sector=${sectorMsPostFetch.toFixed(1)}ms` : ""}`
             );
 
             window.dispatchEvent(
@@ -155,27 +203,34 @@ class NatureBrain {
                         radiusM,
                         fetchMs: fetchWallMs,
                         sectorMs: sectorMsPostFetch,
-                        areas: areas.length,
+                        areas: areasCount,
                         applied: apply,
+                        failed,
                     },
                 })
             );
         };
 
         try {
-            // Tier 1: small radius + centroids only → first paint as fast as possible.
-            //   Distance estimates are rough (centroid, not nearest edge) and "touching grass"
-            //   is disabled this round (no polygons). Tier 2 overwrites with precise data.
-            // Tier 2: full radius + full polygons → accurate edge distances + touching-grass.
-            await Promise.all([
-                runTier(1, 800, { withGeometry: false, serverTimeoutSec: 8 }),
-                runTier(2, 3000, { withGeometry: true, serverTimeoutSec: 25 }),
-            ]);
+            // Tier 1 (bbox, 800 m) only runs when there is nothing precise to display yet.
+            //   Each park is approximated by its lat/lon rectangle; edge distance is a strict
+            //   lower bound on the true distance (bbox ⊇ polygon), and we still flag
+            //   "touching grass" via point-in-rectangle. Over-fires on L-shaped parks, but
+            //   tier 2 corrects that within seconds.
+            // Tier 2 (geom, 3000 m) always runs: it owns final accuracy. On re-fetches the
+            //   previous polygons stay live in `allGrassyAreas` until tier 2 lands, so the UI
+            //   never blinks back to "scanning" or empty distance while the user is walking.
+            const tiers = [];
+            if (runFirstPaintTier) {
+                tiers.push(runTier(1, 800, { geometryMode: "bbox", serverTimeoutSec: 8 }));
+            }
+            tiers.push(runTier(2, 3000, { geometryMode: "geom", serverTimeoutSec: 25 }));
+            await Promise.all(tiers);
         } finally {
             this.isFetching = false;
             statusText.innerText = "";
             console.log(
-                `[NatureBrain] fetch pipeline total (both tiers) ${(performance.now() - wallStart).toFixed(0)}ms`
+                `[NatureBrain] fetch pipeline total ${(performance.now() - wallStart).toFixed(0)}ms`
             );
         }
     }
