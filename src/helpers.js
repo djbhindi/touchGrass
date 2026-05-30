@@ -49,6 +49,32 @@ function getClosestPointOnSegmentMeters(px, py, ax, ay, bx, by) {
     };
 }
 
+/**
+ * Visits the per-edge closest-to-user point on a closed ring of (lat, lon) vertices.
+ * Each edge contributes exactly one call to `visit(lat, lon, distanceKm)` — the foot of
+ * the perpendicular from the user, clamped to the segment endpoints.
+ *
+ * This is the workhorse for two callers:
+ *   1. Global-nearest queries (`getNearestPointOnGeometry` below) keep only the smallest.
+ *   2. Per-sector compass scatter (in `NatureBrain._recomputeSectors`) bins each visit
+ *      into a bearing sector so a polygon that angularly covers N sectors lights all N up,
+ *      not just the one containing its global winner.
+ *
+ * No-op if `geometry` is falsy or empty.
+ */
+function forEachEdgeNearestPoint(userLat, userLon, geometry, visit) {
+    if (!geometry || geometry.length === 0) return;
+    const projected = geometry.map((p) => toLocalMeters(userLat, userLon, p.lat, p.lon));
+    for (let i = 0; i < projected.length; i++) {
+        const a = projected[i];
+        const b = projected[(i + 1) % projected.length];
+        const c = getClosestPointOnSegmentMeters(0, 0, a.x, a.y, b.x, b.y);
+        const distKm = Math.sqrt(c.x * c.x + c.y * c.y) / 1000;
+        const ll = toLatLon(userLat, userLon, c.x, c.y);
+        visit(ll.lat, ll.lon, distKm);
+    }
+}
+
 function getNearestPointOnGeometry(userLat, userLon, geometry, fallbackLat, fallbackLon) {
     if (!geometry || geometry.length === 0) {
         const lat = fallbackLat ?? userLat;
@@ -59,34 +85,61 @@ function getNearestPointOnGeometry(userLat, userLon, geometry, fallbackLat, fall
             distanceKm: getDistance(userLat, userLon, lat, lon)
         };
     }
+    let bestLat = null;
+    let bestLon = null;
+    let bestKm = Infinity;
+    forEachEdgeNearestPoint(userLat, userLon, geometry, (lat, lon, distKm) => {
+        if (distKm < bestKm) {
+            bestKm = distKm;
+            bestLat = lat;
+            bestLon = lon;
+        }
+    });
+    return { lat: bestLat, lon: bestLon, distanceKm: bestKm };
+}
 
-    const refLat = userLat;
-    const refLon = userLon;
-    const userPoint = { x: 0, y: 0 };
-
-    const projected = geometry.map((p) => toLocalMeters(refLat, refLon, p.lat, p.lon));
-    let best = null;
-    let bestDistSq = Infinity;
-
-    for (let i = 0; i < projected.length; i++) {
-        const a = projected[i];
-        const b = projected[(i + 1) % projected.length];
-        const candidate = getClosestPointOnSegmentMeters(userPoint.x, userPoint.y, a.x, a.y, b.x, b.y);
-        const dx = candidate.x - userPoint.x;
-        const dy = candidate.y - userPoint.y;
-        const distSq = (dx * dx) + (dy * dy);
-        if (distSq < bestDistSq) {
-            bestDistSq = distSq;
-            best = candidate;
+/**
+ * Smallest clockwise 0–360° arc that contains every input bearing. Used to compute the
+ * angular extent of a polygon as seen from the user, so we know which compass sectors
+ * the polygon "occupies" — even ones where no per-edge closest point happened to land.
+ *
+ * Algorithm: sort bearings, find the largest gap between consecutive bearings (treating
+ * 0/360 as a wrap-around boundary), and return the complement of that gap. Returns null
+ * for empty input. For a single bearing, returns a zero-span arc at that bearing.
+ */
+function smallestEnclosingArc(bearings) {
+    if (!bearings || bearings.length === 0) return null;
+    if (bearings.length === 1) {
+        return { start: bearings[0], end: bearings[0], spanDeg: 0 };
+    }
+    const sorted = [...bearings].sort((a, b) => a - b);
+    let largestGap = -1;
+    let arcStart = sorted[0];
+    let arcEnd = sorted[sorted.length - 1];
+    for (let i = 0; i < sorted.length - 1; i++) {
+        const gap = sorted[i + 1] - sorted[i];
+        if (gap > largestGap) {
+            largestGap = gap;
+            arcStart = sorted[i + 1];
+            arcEnd = sorted[i];
         }
     }
+    const wrapGap = 360 - sorted[sorted.length - 1] + sorted[0];
+    if (wrapGap > largestGap) {
+        largestGap = wrapGap;
+        arcStart = sorted[0];
+        arcEnd = sorted[sorted.length - 1];
+    }
+    return { start: arcStart, end: arcEnd, spanDeg: 360 - largestGap };
+}
 
-    const nearest = toLatLon(refLat, refLon, best.x, best.y);
-    return {
-        lat: nearest.lat,
-        lon: nearest.lon,
-        distanceKm: Math.sqrt(bestDistSq) / 1000
-    };
+/** Tests whether `bearing` (0–360°) lies on the clockwise arc from arc.start to arc.end. */
+function bearingInArc(bearing, arc) {
+    if (!arc) return false;
+    if (arc.spanDeg >= 360 - 1e-9) return true;
+    const { start, end } = arc;
+    if (start <= end) return bearing >= start && bearing <= end;
+    return bearing >= start || bearing <= end;
 }
 
 /**

@@ -58,23 +58,56 @@ class NatureBrain {
         }
     }
 
+    _sectorIndex(bearingDeg) {
+        return Math.floor(((bearingDeg + (this.sectorAngle / 2)) % 360) / this.sectorAngle);
+    }
+
     /**
-     * Assigns nearest grass per compass sector from `this.allGrassyAreas`.
-     * O(areas × vertices); dominates CPU once Overpass data is loaded.
+     * Resolves "what grass is in each compass sector" in two passes:
+     *
+     *   Phase 1 — precise per-edge scatter. For each area we visit every edge's closest
+     *     point to the user (`forEachEdgeNearestPoint`), bin that point's bearing into a
+     *     sector, and keep the per-sector minimum across all edges and all areas. A polygon
+     *     that angularly wraps around the user (e.g. a creek-side park hugging a
+     *     residential pocket on three sides) lights up every sector it actually occupies
+     *     with the *exact* per-bearing distance, instead of just the single sector that
+     *     contains its global winner.
+     *
+     *   Phase 2 — interpolated bearing-range fill. For each area we compute the smallest arc
+     *     enclosing its Phase-1 scatter bearings; any sector still at `Infinity` whose
+     *     center falls inside some area's arc gets a distance *interpolated* between that
+     *     area's nearest CW and CCW per-area hits, weighted by angular proximity. Tagged
+     *     `approximate: true`. This is the same big-O as the precise pass (we already walk
+     *     all sectors), but it tracks how the polygon's distance actually changes around
+     *     the user — e.g. a creek-side park 80 m due south and 140 m to the southwest
+     *     would fill the south-southwest sector with ~110 m, not the global-min 80 m.
+     *
+     *   Distance honesty: a Phase-2 fill is an interpolation between two true per-edge
+     *     distances on this same polygon, so it never claims grass is closer than what the
+     *     polygon's geometry actually permits within the two flanking sectors. The
+     *     `approximate: true` flag is preserved on the sector object in case the UI wants
+     *     to render it differently later (e.g. an italic distance, a "~" prefix).
+     *
+     * Cost: O(sum of vertices) for Phase 1 (same as the previous single-pass code), plus
+     * O(V log V) per area for the arc sort, plus O(sectors² × areas) worst case for Phase 2
+     * (per empty sector, per area, two short CW/CCW walks). With 16 sectors and ~50 areas
+     * that's < 13 k ops — trivial compared to the edge-scatter pass.
      */
     _recomputeSectors(userLat, userLon) {
         this.sectors = Array(this.sectorCount).fill(null).map(() => ({ distance: Infinity }));
         this.isTouchingGrass = false;
         this.touchingAreaName = "";
 
-        this.allGrassyAreas.forEach(area => {
-            // Containment + nearest-point strategy, in order of precision:
-            //   1. Closed polygon vertices (`out geom`) — exact.
-            //   2. Axis-aligned bounding box (`out body bb`) — over-approximates containment,
-            //      under-estimates distance, but still useful: "in the bbox of Central Park"
-            //      is a much better signal than "X km from Central Park's centroid."
-            //   3. Anchor point only (nodes, or a way with neither geom nor bounds) — distance
-            //      to a single point; never reports containment.
+        const perAreaInfo = [];
+
+        this.allGrassyAreas.forEach((area) => {
+            // Containment + scatter strategy, in order of precision:
+            //   1. Closed polygon vertices (`out geom`) — exact `isPointInPolygon`.
+            //   2. Axis-aligned bounding box (`out body bb`) — `isPointInBBox`; rectangle
+            //      treated as a 4-vertex ring for scatter, so we still get up to 4 per-sector
+            //      hits + bearing-range fill across the rest of the rectangle's angular span.
+            //   3. Anchor point only (node feature) — single scatter point; never reports
+            //      containment.
             const hasPolygon = area.geometry && area.geometry.length >= 4;
             const hasBBox = !!area.bounds;
 
@@ -88,39 +121,132 @@ class NatureBrain {
                 }
             }
 
-            let nearest;
-            if (hasPolygon) {
-                nearest = getNearestPointOnGeometry(
-                    userLat,
-                    userLon,
-                    area.geometry,
-                    area.lat,
-                    area.lon
-                );
-            } else if (hasBBox) {
-                nearest = getNearestPointOnBBox(userLat, userLon, area.bounds);
-            } else {
-                nearest = getNearestPointOnGeometry(
-                    userLat,
-                    userLon,
-                    null,
-                    area.lat,
-                    area.lon
-                );
-            }
-            const dist = nearest.distanceKm;
-            const bear = getBearing(userLat, userLon, nearest.lat, nearest.lon);
-            const idx = Math.floor(((bear + (this.sectorAngle / 2)) % 360) / this.sectorAngle);
+            const scatterBearings = [];
+            // Per-area per-sector hits. Needed (instead of just the global per-sector min)
+            // so Phase 2's CW/CCW walk only sees points from *this* polygon — interpolating
+            // between two different parks' edges would be nonsense.
+            const areaHits = new Map();
 
-            if (dist < this.sectors[idx].distance) {
+            const scatter = (lat2, lon2, dist) => {
+                const bear = getBearing(userLat, userLon, lat2, lon2);
+                scatterBearings.push(bear);
+                const idx = this._sectorIndex(bear);
+                if (dist < this.sectors[idx].distance) {
+                    this.sectors[idx] = {
+                        ...area,
+                        distance: dist,
+                        targetLat: lat2,
+                        targetLon: lon2,
+                        approximate: false,
+                    };
+                }
+                const prev = areaHits.get(idx);
+                if (!prev || dist < prev.dist) {
+                    areaHits.set(idx, { dist, lat: lat2, lon: lon2 });
+                }
+            };
+
+            if (hasPolygon) {
+                forEachEdgeNearestPoint(userLat, userLon, area.geometry, scatter);
+            } else if (hasBBox) {
+                const b = area.bounds;
+                const ring = [
+                    { lat: b.minlat, lon: b.minlon },
+                    { lat: b.minlat, lon: b.maxlon },
+                    { lat: b.maxlat, lon: b.maxlon },
+                    { lat: b.maxlat, lon: b.minlon },
+                ];
+                forEachEdgeNearestPoint(userLat, userLon, ring, scatter);
+            } else {
+                const dist = getDistance(userLat, userLon, area.lat, area.lon);
+                scatter(area.lat, area.lon, dist);
+            }
+
+            perAreaInfo.push({
+                area,
+                arc: smallestEnclosingArc(scatterBearings),
+                areaHits,
+            });
+        });
+
+        // Phase 2: for each still-empty sector, find the area covering it whose nearest
+        // CW/CCW per-area hits interpolate to the smallest distance. Both the CW and CCW
+        // walks are guaranteed to find *some* hit (the arc was built from this area's
+        // scatter, so at least one entry exists in areaHits); when only one is reachable
+        // before wrapping the compass — i.e. the arc has hits on just one side of this
+        // sector — we use that hit's distance unchanged rather than extrapolating.
+        for (let idx = 0; idx < this.sectorCount; idx++) {
+            if (this.sectors[idx].distance !== Infinity) continue;
+            const sectorCenter = idx * this.sectorAngle;
+            let best = null;
+            for (const info of perAreaInfo) {
+                if (!info.arc) continue;
+                if (!bearingInArc(sectorCenter, info.arc)) continue;
+                if (info.areaHits.size === 0) continue;
+
+                // Walk CW and CCW from the empty sector to find this area's nearest flanking
+                // per-sector hits. Each walk bails out the moment it would step past the arc
+                // boundary, so we never reach across the back of the compass for a "wrap-around"
+                // hit that is geometrically the other arc endpoint. When only one side yields
+                // a hit, the fallback below uses that single hit's distance unchanged.
+                let ccwIdx = null;
+                let ccwStep = 0;
+                for (let step = 1; step < this.sectorCount; step++) {
+                    const i = (idx - step + this.sectorCount) % this.sectorCount;
+                    if (!bearingInArc(i * this.sectorAngle, info.arc)) break;
+                    if (info.areaHits.has(i)) {
+                        ccwIdx = i;
+                        ccwStep = step;
+                        break;
+                    }
+                }
+                let cwIdx = null;
+                let cwStep = 0;
+                for (let step = 1; step < this.sectorCount; step++) {
+                    const i = (idx + step) % this.sectorCount;
+                    if (!bearingInArc(i * this.sectorAngle, info.arc)) break;
+                    if (info.areaHits.has(i)) {
+                        cwIdx = i;
+                        cwStep = step;
+                        break;
+                    }
+                }
+
+                let dist;
+                let lat;
+                let lon;
+                if (ccwIdx !== null && cwIdx !== null && ccwIdx !== cwIdx) {
+                    // Inverse-step weights: the *closer* neighbor gets the *larger* weight,
+                    // so a sector 1 step CCW and 3 steps CW pulls 75 % toward the CCW value.
+                    const ccwHit = info.areaHits.get(ccwIdx);
+                    const cwHit = info.areaHits.get(cwIdx);
+                    const total = ccwStep + cwStep;
+                    const wCCW = cwStep / total;
+                    const wCW = ccwStep / total;
+                    dist = ccwHit.dist * wCCW + cwHit.dist * wCW;
+                    lat = ccwHit.lat * wCCW + cwHit.lat * wCW;
+                    lon = ccwHit.lon * wCCW + cwHit.lon * wCW;
+                } else {
+                    const onlyHit = info.areaHits.get(ccwIdx !== null ? ccwIdx : cwIdx);
+                    dist = onlyHit.dist;
+                    lat = onlyHit.lat;
+                    lon = onlyHit.lon;
+                }
+
+                if (!best || dist < best.dist) {
+                    best = { area: info.area, dist, lat, lon };
+                }
+            }
+            if (best) {
                 this.sectors[idx] = {
-                    ...area,
-                    distance: dist,
-                    targetLat: nearest.lat,
-                    targetLon: nearest.lon
+                    ...best.area,
+                    distance: best.dist,
+                    targetLat: best.lat,
+                    targetLon: best.lon,
+                    approximate: true,
                 };
             }
-        });
+        }
     }
 
     async checkFetchThreshold(lat, lon) {
